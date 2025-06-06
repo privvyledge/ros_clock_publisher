@@ -80,8 +80,14 @@ class ClockPublisher(Node):
                         '%Y-%m-%d %H:%M:%S.%f',
                         ParameterDescriptor(type=rclpy.Parameter.Type.STRING.value)
                     ),
-                    ('tick_rate', 1000.0, tick_rate_descriptor),
-                    ('real_time_factor', 1.0, ParameterDescriptor(description='Real-time factor. 1.0 means real-time. If set to > 1.0, the clock will run faster than real-time, if set to < 1.0, the clock will run slower than real-time. RTF = tick_rate * tick_interval = simulated_time / real_time', type=rclpy.Parameter.Type.DOUBLE.value)),
+                    ('tick_rate', 100.0, tick_rate_descriptor),
+                    ('real_time_factor', 1.0, ParameterDescriptor(description='Real-time factor. 1.0 means real-time. '
+                                                                              'If set to > 1.0, the clock will run faster than real-time, '
+                                                                              'if 0.0 < RTF < 1.0, the clock will run slower than real-time, '
+                                                                              'if RTF == 0.0, the clock will pause/freeze, '
+                                                                              'if RTF < 0.0, the clock will go backwards. '
+                                                                              'RTF = tick_rate * tick_interval = simulated_time / real_time',
+                                                                  type=rclpy.Parameter.Type.DOUBLE.value)),
                     ('tick_interval', 0.0, ParameterDescriptor(description='Real-time seconds between clock ticks. If set, overrides adding 1 / tick_rate to current time. Values <= 0.0 are ignored.', type=rclpy.Parameter.Type.DOUBLE.value)),
                     ('delay', 0.0, ParameterDescriptor(description='Real-time seconds to wait before starting the clock. Used to give the user time to launch other nodes when not using ROS 2 launch.', type=rclpy.Parameter.Type.DOUBLE.value)),
                     ('clock_queue_size', 1, ParameterDescriptor(type=rclpy.Parameter.Type.INTEGER.value)),
@@ -154,7 +160,7 @@ class ClockPublisher(Node):
 
         # No duration or end time provided
         else:
-            self.end_sec, self.end_nsec, self.end_ns = None, None, None
+            self.end_sec, self.end_nsec, self.end_ns = None, None, None  # or float('inf')
             self.duration = float('inf')
             self.get_logger().info("No duration or end time provided. Running indefinitely.")
 
@@ -208,6 +214,7 @@ class ClockPublisher(Node):
         Handles looping and shutdown as well.
         :return:
         """
+        # we use the wall clock time to determine how much time has passed in case the timer drifts, is paused/busy, etc.
         current_wall_time = time.time()
         real_dt = current_wall_time - self.last_wall_time
 
@@ -329,7 +336,22 @@ class ClockPublisher(Node):
                 self.tick_rate = tick_rate
                 self.dt = 1.0 / self.tick_rate  # in seconds (float)
                 self.dt_ns = int(1e9 / self.tick_rate)  # in nanoseconds (int)
-                self.clock_timer = self.create_timer(self.dt, self.tick, autostart=self.autostart)
+
+                if self.delay > 0.0:
+                    time.sleep(self.delay)
+
+                # Destroy previous timer if it exists
+                if self.clock_timer:
+                    self.clock_timer.destroy()
+                    del self.clock_timer
+
+                try:
+                    # ROS2 Humble does not have an autostart argument
+                    self.clock_timer = self.create_timer(self.dt, self.tick, autostart=self.autostart)
+                except TypeError:
+                    self.clock_timer = self.create_timer(self.dt, self.tick)
+                    if not self.autostart:
+                        self.clock_timer.cancel()
             elif param.name == 'real_time_factor' and param.type_ == Parameter.Type.DOUBLE:
                 self.real_time_factor = param.value
             elif param.name == 'tick_interval' and param.type_ == Parameter.Type.DOUBLE:
