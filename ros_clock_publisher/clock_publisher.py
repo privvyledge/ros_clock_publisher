@@ -23,6 +23,7 @@ import sys
 import time
 from datetime import datetime, timedelta
 from typing import Union, Tuple, Optional
+from enum import Enum
 
 import rclpy
 from rclpy.node import Node
@@ -31,6 +32,12 @@ from rcl_interfaces.msg import ParameterDescriptor, SetParametersResult, Paramet
 from rosgraph_msgs.msg import Clock
 
 from ros_clock_publisher.utils import normalize_to_ros_time
+
+
+class ClockState(Enum):
+    PAUSED = 0
+    PLAYING = 1
+    STOPPED = 2
 
 
 class ClockPublisher(Node):
@@ -65,6 +72,7 @@ class ClockPublisher(Node):
                                             f"Run 'ros2 param set {self.get_fully_qualified_name()} autostart true' "
                                             f"to enable.",
                                 type=rclpy.Parameter.Type.BOOL.value)),
+                    ('state', 'play', ParameterDescriptor(type=rclpy.Parameter.Type.STRING.value)),
                     ('start_time', '', start_time_descriptor),
                     (
                         'end_time',
@@ -99,6 +107,8 @@ class ClockPublisher(Node):
 
         # Initialize variables
         self.autostart = bool(self.get_parameter('autostart').get_parameter_value().bool_value)
+        state = self.get_parameter('state').get_parameter_value().string_value
+        self.state = ClockState.PLAYING if state == 'play' else ClockState.PAUSED
         self.start_time = self.get_parameter('start_time').get_parameter_value().string_value
         self.end_time = self.get_parameter('end_time').get_parameter_value().string_value
         self.duration = float(self.get_parameter('duration').get_parameter_value().double_value)
@@ -126,7 +136,7 @@ class ClockPublisher(Node):
 
         # Handle empty time parameters
         if not self.start_time:
-            self.start_time = time.time_ns()  # datetime.utcnow()
+            self.start_time = time.time_ns()  # datetime.utcnow() or 0.0
             self.get_logger().info(f"No start_time provided. Using current time: {self.start_time}")
 
         if not self.end_time:
@@ -214,6 +224,10 @@ class ClockPublisher(Node):
         Handles looping and shutdown as well.
         :return:
         """
+        # check if the state is ClockState.PLAYING
+        if self.state != ClockState.PLAYING:
+            return
+
         # we use the wall clock time to determine how much time has passed in case the timer drifts, is paused/busy, etc.
         current_wall_time = time.time()
         real_dt = current_wall_time - self.last_wall_time
@@ -300,7 +314,11 @@ class ClockPublisher(Node):
                 if self.autostart:
                     self.clock_timer.reset()
                 else:
+                    self.state = ClockState.STOPPED
                     self.clock_timer.cancel()
+            elif param.name == 'state' and param.type_ == Parameter.Type.STRING:
+                state = param.value
+                self.state = ClockState.PLAYING if state == 'play' else ClockState.PAUSED
             elif param.name == 'start_time' and param.type_ == Parameter.Type.STRING:
                 self.start_time = param.value
                 if not self.start_time:
